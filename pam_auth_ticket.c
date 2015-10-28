@@ -98,7 +98,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		/* TODO: timeout should be an argument! */
 		int n, timeout;
 		if ((n = (int)now.tv_sec) >
-		    (timeout = read_ticket(crypt_passwd_heap)) + 60) {
+		    (timeout = read_ticket(crypt_passwd_heap)) + 600) {
 		    	if (timeout > 0)
 				openpam_log(PAM_LOG_DEBUG,
 				    "expired auth ticket: %d > %d", n,
