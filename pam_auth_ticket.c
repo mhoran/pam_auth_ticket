@@ -91,16 +91,18 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	else if ((crypt_password = crypt(password, pwd->pw_passwd)) == NULL)
 		pam_err = PAM_AUTH_ERR;
 	else {
-		char *crypt_passwd_heap;
-		crypt_passwd_heap = malloc(strlen(crypt_password) + 1);
-		strcpy(crypt_passwd_heap, crypt_password);
-		pam_set_data(pamh, "pam_auth_ticket", crypt_passwd_heap,
-		    cleanup);
+		char *cp;
+		size_t len = strlen(crypt_password) + 1;
+		if ((cp = calloc(len, sizeof(char))) == NULL ||
+		    strlcpy(cp, crypt_password, len) > len)
+			pam_set_data(pamh, "pam_auth_ticket", NULL, NULL);
+		else
+			pam_set_data(pamh, "pam_auth_ticket", cp, cleanup);
 
 		/* TODO: timeout should be an argument! */
 		int n, timestamp;
 		if ((n = (int)now.tv_sec) >
-		    (timestamp = read_ticket(crypt_passwd_heap)) + TIMEOUT) {
+		    (timestamp = read_ticket(crypt_password)) + TIMEOUT) {
 			openpam_log(PAM_LOG_DEBUG,
 			    "expired auth ticket: %d > %d", n,
 			    timestamp + TIMEOUT);
@@ -139,7 +141,8 @@ pam_sm_open_session(pam_handle_t *pamh, int flags,
 {
 	const void *data;
 	pam_get_data(pamh, "pam_auth_ticket", &data);
-	write_ticket((const char*)data);
+	if (data != NULL)
+		write_ticket((const char*)data);
 
 	return (PAM_SUCCESS);
 }
