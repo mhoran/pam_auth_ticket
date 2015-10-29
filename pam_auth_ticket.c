@@ -164,31 +164,31 @@ static int
 read_ticket(char* crypt_password)
 {
 	char *filename = "/tmp/auth_tickets";
-	int key;
+	int key = 0;
 	FILE *f;
-	char *line;
+	char *cached_password, *ts;
 	size_t len;
 	
 	if ((f = fopen(filename, "r")) == NULL)
 		return (0);
 
-	if ((line = openpam_readline(f, NULL, &len)) != NULL &&
-	    strncmp(crypt_password, line, len) == 0) {
-		free(line);
-		line = NULL;
-		if ((line = openpam_readline(f, NULL, NULL)) != NULL) {
-			key = atoi(line);
-			free(line);
-			line = NULL;
+	if ((cached_password = openpam_readword(f, NULL, &len)) != NULL) {
+		if (strncmp(crypt_password, cached_password, len) == 0) {
+			if ((ts = openpam_readword(f, NULL, NULL)) != NULL) {
+				key = atoi(ts);
+				free(ts);
+			} else {
+				openpam_log(PAM_LOG_ERROR,
+				    "failed to read timestamp");
+			}
+		} else {
+			openpam_log(PAM_LOG_DEBUG, "passwords do not match");
 		}
-		else
-			key = 0;
+
+		free(cached_password);
 	} else {
-		openpam_log(PAM_LOG_ERROR,
-		    "unrecognized file format: %s", filename);
-		key = 0;
+		openpam_log(PAM_LOG_ERROR, "failed to read cached password");
 	}
-	free(line);
 	fclose(f);
 	return (key);
 }
@@ -211,7 +211,7 @@ write_ticket(char* data)
 	pam_err = PAM_SYSTEM_ERR;
 	len = strlen(data);
 	if ((fd = open(keyfile, O_WRONLY|O_CREAT|O_TRUNC, 0600)) < 0 ||
-	    write(fd, data, len) != len || write(fd, "\n", 1) != 1 ||
+	    write(fd, data, len) != len || write(fd, " ", 1) != 1 ||
 	    write(fd, ts, strlen(ts)) != strlen(ts) ||
 	    write(fd, "\n", 1) != 1) {
 		openpam_log(PAM_LOG_ERROR, "%s: %m", keyfile);
