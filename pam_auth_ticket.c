@@ -49,6 +49,8 @@
 #define PAM_EXTERN
 #endif
 
+#define TIMEOUT 600
+
 static int write_ticket();
 static int read_ticket();
 void cleanup(pam_handle_t *pamh, void *data, int error_status);
@@ -96,13 +98,12 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		    cleanup);
 
 		/* TODO: timeout should be an argument! */
-		int n, timeout;
+		int n, timestamp;
 		if ((n = (int)now.tv_sec) >
-		    (timeout = read_ticket(crypt_passwd_heap)) + 600) {
-		    	if (timeout > 0)
-				openpam_log(PAM_LOG_DEBUG,
-				    "expired auth ticket: %d > %d", n,
-				    timeout + 60);
+		    (timestamp = read_ticket(crypt_passwd_heap)) + TIMEOUT) {
+			openpam_log(PAM_LOG_DEBUG,
+			    "expired auth ticket: %d > %d", n,
+			    timestamp + TIMEOUT);
 			pam_err = PAM_AUTH_ERR;
 		} else
 			pam_err = PAM_SUCCESS;
@@ -164,7 +165,7 @@ static int
 read_ticket(char* crypt_password)
 {
 	char *filename = "/tmp/auth_tickets";
-	int key = 0;
+	int timestamp = 0;
 	FILE *f;
 	char *cached_password, *ts;
 	size_t len;
@@ -175,7 +176,11 @@ read_ticket(char* crypt_password)
 	if ((cached_password = openpam_readword(f, NULL, &len)) != NULL) {
 		if (strncmp(crypt_password, cached_password, len) == 0) {
 			if ((ts = openpam_readword(f, NULL, NULL)) != NULL) {
-				key = atoi(ts);
+				const char *errstr;
+				timestamp = strtonum(ts, 0, INT_MAX - TIMEOUT,
+				    &errstr);
+				if (errstr != NULL)
+					timestamp = 0;
 				free(ts);
 			} else {
 				openpam_log(PAM_LOG_ERROR,
@@ -190,7 +195,7 @@ read_ticket(char* crypt_password)
 		openpam_log(PAM_LOG_ERROR, "failed to read cached password");
 	}
 	fclose(f);
-	return (key);
+	return (timestamp);
 }
 
 static int
