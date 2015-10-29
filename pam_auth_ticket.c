@@ -93,10 +93,8 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	else {
 		char *cp;
 		size_t len = strlen(crypt_password) + 1;
-		if ((cp = calloc(len, sizeof(char))) == NULL ||
-		    strlcpy(cp, crypt_password, len) > len)
-			pam_set_data(pamh, "pam_auth_ticket", NULL, NULL);
-		else
+		if ((cp = calloc(len, sizeof(char))) != NULL &&
+		    strlcpy(cp, crypt_password, len) < len)
 			pam_set_data(pamh, "pam_auth_ticket", cp, cleanup);
 
 		/* TODO: timeout should be an argument! */
@@ -140,8 +138,11 @@ pam_sm_open_session(pam_handle_t *pamh, int flags,
 	int argc, const char *argv[])
 {
 	const void *data;
-	pam_get_data(pamh, "pam_auth_ticket", &data);
-	if (data != NULL)
+	int get_data_return;
+
+	get_data_return = pam_get_data(pamh, "pam_auth_ticket", &data);
+	if (get_data_return != PAM_NO_MODULE_DATA &&
+	    get_data_return != PAM_SYSTEM_ERR)
 		write_ticket((const char*)data);
 
 	return (PAM_SUCCESS);
