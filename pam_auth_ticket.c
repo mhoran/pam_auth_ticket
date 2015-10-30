@@ -40,7 +40,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <math.h>
-#include <openssl/sha.h>
+#include <stdbool.h>
 
 #include <security/pam_modules.h>
 #include <security/pam_appl.h>
@@ -51,8 +51,8 @@
 
 #define TIMEOUT 600
 
-static int write_ticket();
-static int read_ticket();
+static int write_ticket(const char* data);
+static bool read_ticket(int *timestamp, char **password, size_t *len);
 void cleanup(pam_handle_t *pamh, void *data, int error_status);
 
 PAM_EXTERN int
@@ -88,6 +88,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	/* FIXME: what happens if password is ! or *? */
 	if ((!pwd->pw_passwd[0] && (flags & PAM_DISALLOW_NULL_AUTHTOK)))
 		pam_err = PAM_AUTH_ERR;
+	/* TODO: unique salt */
 	else if ((crypt_password = crypt(password, pwd->pw_passwd)) == NULL)
 		pam_err = PAM_AUTH_ERR;
 	else {
@@ -97,16 +98,25 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		    strlcpy(cp, crypt_password, len) < len)
 			pam_set_data(pamh, "pam_auth_ticket", cp, cleanup);
 
-		/* TODO: timeout should be an argument! */
-		int n, timestamp;
-		if ((n = (int)now.tv_sec) >
-		    (timestamp = read_ticket(crypt_password)) + TIMEOUT) {
-			openpam_log(PAM_LOG_DEBUG,
-			    "expired auth ticket: %d > %d", n,
-			    timestamp + TIMEOUT);
+		char *cached_password = NULL;
+		int timestamp = 0;
+		if (!read_ticket(&timestamp, &cached_password, &len))
 			pam_err = PAM_AUTH_ERR;
-		} else
-			pam_err = PAM_SUCCESS;
+		else if (strncmp(crypt_password, cached_password, len) == 0) {
+			/* TODO: timeout should be an argument! */
+			if ((int)now.tv_sec > timestamp + TIMEOUT) {
+				openpam_log(PAM_LOG_DEBUG,
+				    "expired auth ticket: %d > %d",
+				    (int)now.tv_sec, timestamp + TIMEOUT);
+				pam_err = PAM_AUTH_ERR;
+			} else {
+				pam_err = PAM_SUCCESS;
+			}
+		} else {
+			openpam_log(PAM_LOG_DEBUG, "passwords do not match");
+			pam_err = PAM_AUTH_ERR;
+		}
+		free(cached_password);
 	}
 
 	return (pam_err);
@@ -164,45 +174,37 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags,
 	return (PAM_SERVICE_ERR);
 }
 
-static int
-read_ticket(char* crypt_password)
+static bool
+read_ticket(int *timestamp, char **password, size_t *len)
 {
 	char *filename = "/tmp/auth_tickets";
-	int timestamp = 0;
 	FILE *f;
-	char *cached_password, *ts;
-	size_t len;
+	char *ts;
+	bool success = false;
 	
 	if ((f = fopen(filename, "r")) == NULL)
-		return (0);
+		return (false);
 
-	if ((cached_password = openpam_readword(f, NULL, &len)) != NULL) {
-		if (strncmp(crypt_password, cached_password, len) == 0) {
-			if ((ts = openpam_readword(f, NULL, NULL)) != NULL) {
-				const char *errstr;
-				timestamp = strtonum(ts, 0, INT_MAX - TIMEOUT,
-				    &errstr);
-				if (errstr != NULL)
-					timestamp = 0;
-				free(ts);
-			} else {
-				openpam_log(PAM_LOG_ERROR,
-				    "failed to read timestamp");
-			}
+	if ((*password = openpam_readword(f, NULL, len)) != NULL) {
+		if ((ts = openpam_readword(f, NULL, NULL)) != NULL) {
+			const char *err;
+			*timestamp = strtonum(ts, 0, INT_MAX - TIMEOUT, &err);
+			if (err == NULL)
+				success = true;
+
+			free(ts);
 		} else {
-			openpam_log(PAM_LOG_DEBUG, "passwords do not match");
+			openpam_log(PAM_LOG_ERROR, "failed to read timestamp");
 		}
-
-		free(cached_password);
 	} else {
 		openpam_log(PAM_LOG_ERROR, "failed to read cached password");
 	}
 	fclose(f);
-	return (timestamp);
+	return (success);
 }
 
 static int
-write_ticket(char* data)
+write_ticket(const char* data)
 {
 	char *keyfile = "/tmp/auth_tickets";
 	int fd, len, pam_err;
