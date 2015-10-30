@@ -141,8 +141,7 @@ pam_sm_open_session(pam_handle_t *pamh, int flags,
 	int get_data_return;
 
 	get_data_return = pam_get_data(pamh, "pam_auth_ticket", &data);
-	if (get_data_return != PAM_NO_MODULE_DATA &&
-	    get_data_return != PAM_SYSTEM_ERR)
+	if (get_data_return == PAM_SUCCESS)
 		write_ticket((const char*)data);
 
 	return (PAM_SUCCESS);
