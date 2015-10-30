@@ -45,22 +45,17 @@
 #include <security/pam_modules.h>
 #include <security/pam_appl.h>
 
-#ifndef PAM_EXTERN
-#define PAM_EXTERN
-#endif
-
 #define TIMEOUT 600
 
 static int write_ticket(const char* data);
-static bool read_ticket(int *timestamp, char **password, size_t *len);
-void cleanup(pam_handle_t *pamh, void *data, int error_status);
+static bool read_ticket(int *timestamp, char **password);
+static void cleanup(pam_handle_t *pamh, void *data, int error_status);
 static char* gen_salt();
 
 PAM_EXTERN int
 pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	int argc, const char *argv[])
 {
-	struct passwd *pwd;
 	const char *user;
 	char *crypt_password, *password;
 	int pam_err, retry;
@@ -68,7 +63,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	/* identify user */
 	if ((pam_err = pam_get_user(pamh, &user, NULL)) != PAM_SUCCESS)
 		return (pam_err);
-	if ((pwd = getpwnam(user)) == NULL)
+	if (getpwnam(user) == NULL)
 		return (PAM_USER_UNKNOWN);
 
 	/* get password */
@@ -84,12 +79,9 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		return (PAM_AUTH_ERR);
 
 	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-
 	char *cached_password = NULL;
 	int timestamp = 0;
-	size_t len;
-	if (!read_ticket(&timestamp, &cached_password, &len)) {
+	if (!read_ticket(&timestamp, &cached_password)) {
 		pam_err = PAM_AUTH_ERR;
 		if (crypt_set_format("sha512"))
 			crypt_password = crypt(password, gen_salt());
@@ -99,7 +91,8 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	}
 
 	if ((crypt_password = crypt(password, cached_password)) != NULL &&
-	    strncmp(crypt_password, cached_password, len) == 0) {
+	    strcmp(crypt_password, cached_password) == 0) {
+		clock_gettime(CLOCK_MONOTONIC, &now);
 		/* TODO: timeout should be an argument! */
 		if ((int)now.tv_sec > timestamp + TIMEOUT) {
 			openpam_log(PAM_LOG_DEBUG,
@@ -116,6 +109,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 done:
 	if (crypt_password != NULL) {
 		char *cp;
+		size_t len;
 		len = strlen(crypt_password) + 1;
 		if ((cp = calloc(len, sizeof(char))) != NULL &&
 		    strlcpy(cp, crypt_password, len) < len)
@@ -126,7 +120,8 @@ done:
 	return (pam_err);
 }
 
-void cleanup(pam_handle_t *pamh, void *data, int error_status) {
+static void
+cleanup(pam_handle_t *pamh, void *data, int error_status) {
 	free(data);
 }
 
@@ -191,7 +186,7 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags,
 }
 
 static bool
-read_ticket(int *timestamp, char **password, size_t *len)
+read_ticket(int *timestamp, char **password)
 {
 	char *filename = "/tmp/auth_tickets";
 	FILE *f;
@@ -201,7 +196,7 @@ read_ticket(int *timestamp, char **password, size_t *len)
 	if ((f = fopen(filename, "r")) == NULL)
 		return (false);
 
-	if ((*password = openpam_readword(f, NULL, len)) != NULL) {
+	if ((*password = openpam_readword(f, NULL, NULL)) != NULL) {
 		if ((ts = openpam_readword(f, NULL, NULL)) != NULL) {
 			const char *err;
 			*timestamp = strtonum(ts, 0, INT_MAX - TIMEOUT, &err);
