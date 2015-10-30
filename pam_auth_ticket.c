@@ -54,6 +54,7 @@
 static int write_ticket(const char* data);
 static bool read_ticket(int *timestamp, char **password, size_t *len);
 void cleanup(pam_handle_t *pamh, void *data, int error_status);
+static char* gen_salt();
 
 PAM_EXTERN int
 pam_sm_authenticate(pam_handle_t *pamh, int flags,
@@ -85,45 +86,60 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
-	/* FIXME: what happens if password is ! or *? */
-	if ((!pwd->pw_passwd[0] && (flags & PAM_DISALLOW_NULL_AUTHTOK)))
+	char *cached_password = NULL;
+	int timestamp = 0;
+	size_t len;
+	if (!read_ticket(&timestamp, &cached_password, &len)) {
 		pam_err = PAM_AUTH_ERR;
-	/* TODO: unique salt */
-	else if ((crypt_password = crypt(password, pwd->pw_passwd)) == NULL)
+		if (crypt_set_format("sha512"))
+			crypt_password = crypt(password, gen_salt());
+		else
+			crypt_password = NULL;
+		goto done;
+	}
+
+	if ((crypt_password = crypt(password, cached_password)) != NULL &&
+	    strncmp(crypt_password, cached_password, len) == 0) {
+		/* TODO: timeout should be an argument! */
+		if ((int)now.tv_sec > timestamp + TIMEOUT) {
+			openpam_log(PAM_LOG_DEBUG,
+				"expired auth ticket: %d > %d",
+				(int)now.tv_sec, timestamp + TIMEOUT);
+			pam_err = PAM_AUTH_ERR;
+		} else {
+			pam_err = PAM_SUCCESS;
+		}
+	} else {
+		openpam_log(PAM_LOG_DEBUG, "passwords do not match");
 		pam_err = PAM_AUTH_ERR;
-	else {
+	}
+done:
+	if (crypt_password != NULL) {
 		char *cp;
-		size_t len = strlen(crypt_password) + 1;
+		len = strlen(crypt_password) + 1;
 		if ((cp = calloc(len, sizeof(char))) != NULL &&
 		    strlcpy(cp, crypt_password, len) < len)
 			pam_set_data(pamh, "pam_auth_ticket", cp, cleanup);
-
-		char *cached_password = NULL;
-		int timestamp = 0;
-		if (!read_ticket(&timestamp, &cached_password, &len))
-			pam_err = PAM_AUTH_ERR;
-		else if (strncmp(crypt_password, cached_password, len) == 0) {
-			/* TODO: timeout should be an argument! */
-			if ((int)now.tv_sec > timestamp + TIMEOUT) {
-				openpam_log(PAM_LOG_DEBUG,
-				    "expired auth ticket: %d > %d",
-				    (int)now.tv_sec, timestamp + TIMEOUT);
-				pam_err = PAM_AUTH_ERR;
-			} else {
-				pam_err = PAM_SUCCESS;
-			}
-		} else {
-			openpam_log(PAM_LOG_DEBUG, "passwords do not match");
-			pam_err = PAM_AUTH_ERR;
-		}
-		free(cached_password);
 	}
 
+	free(cached_password);
 	return (pam_err);
 }
 
 void cleanup(pam_handle_t *pamh, void *data, int error_status) {
 	free(data);
+}
+
+static char*
+gen_salt() {
+	static char salt[16+1];
+	const char *const seedchars =
+	    "./0123456789ABCDEFGHIJKLMNOPQRST"
+	    "UVWXYZabcdefghijklmnopqrstuvwxyz";
+	for (int i = 0; i < 16; i++)
+		salt[i] = seedchars[arc4random_uniform(strlen(seedchars))];
+	salt[sizeof(salt) - 1] = '\0';
+	return salt;
 }
 
 PAM_EXTERN int
