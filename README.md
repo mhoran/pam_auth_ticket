@@ -11,9 +11,9 @@ This module checks the incoming password against a previously successful passwor
 To enable `pam_auth_ticket` to cache credentials for the `dovecot` service, add the following to your `pam.d` directory:
 
 ```
-auth	sufficient	/home/mhoran/pam_auth_ticket/pam_auth_ticket.so debug
-auth	requisite	/usr/local/lib/security/pam_oath.so usersfile=/usr/local/etc/users.oath digits=6
+auth	sufficient	/usr/local/lib/security/pam_auth_ticket.so
+auth	requisite	/usr/local/lib/security/pam_oath.so usersfile=/usr/local/etc/users.oath digits=6 use_first_pass
 auth	required	pam_unix.so use_first_pass
 account	required	pam_unix.so
-session	required	/home/mhoran/pam_auth_ticket/pam_auth_ticket.so debug
+session	required	/usr/local/lib/security/pam_auth_ticket.so
 ```
