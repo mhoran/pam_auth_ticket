@@ -46,6 +46,7 @@
 #include <security/pam_appl.h>
 
 #define TIMEOUT 600
+#define AUTH_TICKET_PATH "/tmp/auth_tickets"
 
 static int write_ticket(const char* data);
 static bool read_ticket(int *timestamp, char **password);
@@ -188,12 +189,13 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags,
 static bool
 read_ticket(int *timestamp, char **password)
 {
-	char *filename = "/tmp/auth_tickets";
+	int fd;
 	FILE *f;
 	char *ts;
 	bool success = false;
 	
-	if ((f = fopen(filename, "r")) == NULL)
+	if ((fd = open(AUTH_TICKET_PATH, O_RDONLY|O_SHLOCK)) < 0 ||
+		    (f = fdopen(fd, "r")) == NULL)
 		return (false);
 
 	if ((*password = openpam_readword(f, NULL, NULL)) != NULL) {
@@ -217,8 +219,7 @@ read_ticket(int *timestamp, char **password)
 static int
 write_ticket(const char* data)
 {
-	char *keyfile = "/tmp/auth_tickets";
-	int fd, len, pam_err;
+	int fd, flags, len, pam_err;
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -227,19 +228,17 @@ write_ticket(const char* data)
 	char ts[now_digits + 1];
 	snprintf(ts, sizeof(ts), "%d", (int)now.tv_sec);
 
-	len = 0;
-	fd = -1;
-	pam_err = PAM_SYSTEM_ERR;
+	flags = O_WRONLY|O_CREAT|O_TRUNC|O_EXLOCK;
 	len = strlen(data);
-	if ((fd = open(keyfile, O_WRONLY|O_CREAT|O_TRUNC, 0600)) < 0 ||
+	if ((fd = open(AUTH_TICKET_PATH, flags, 0600)) < 0 ||
 	    write(fd, data, len) != len || write(fd, " ", 1) != 1 ||
 	    write(fd, ts, strlen(ts)) != strlen(ts) ||
 	    write(fd, "\n", 1) != 1) {
-		openpam_log(PAM_LOG_ERROR, "%s: %m", keyfile);
-		goto done;
-	}
-	pam_err = PAM_SUCCESS;
-done:
+		openpam_log(PAM_LOG_ERROR, "%s: %m", AUTH_TICKET_PATH);
+		pam_err = PAM_SYSTEM_ERR;
+	} else
+		pam_err = PAM_SUCCESS;
+
 	if (fd >= 0)
 		close(fd);
 	return (pam_err);
