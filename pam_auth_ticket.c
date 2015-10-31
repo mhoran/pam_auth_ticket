@@ -58,8 +58,8 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	int argc, const char *argv[])
 {
 	const char *user;
-	char *crypt_password, *password;
-	int pam_err, retry;
+	char *password, *crypt_password, *cached_password;
+	int pam_err, timestamp;
 
 	/* identify user */
 	if ((pam_err = pam_get_user(pamh, &user, NULL)) != PAM_SUCCESS)
@@ -68,20 +68,14 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		return (PAM_USER_UNKNOWN);
 
 	/* get password */
-	for (retry = 0; retry < 3; ++retry) {
-		pam_err = pam_get_authtok(pamh, PAM_AUTHTOK,
-		    (const char **)&password, NULL);
-		if (pam_err == PAM_SUCCESS)
-			break;
-	}
+	pam_err = pam_get_authtok(pamh, PAM_AUTHTOK,
+	    (const char **)&password, NULL);
 	if (pam_err == PAM_CONV_ERR)
 		return (pam_err);
 	if (pam_err != PAM_SUCCESS)
 		return (PAM_AUTH_ERR);
 
-	struct timespec now;
-	char *cached_password = NULL;
-	int timestamp = 0;
+	cached_password = NULL;
 	if (!read_ticket(&timestamp, &cached_password)) {
 		pam_err = PAM_AUTH_ERR;
 		if (crypt_set_format("sha512"))
@@ -93,6 +87,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 
 	if ((crypt_password = crypt(password, cached_password)) != NULL &&
 	    strcmp(crypt_password, cached_password) == 0) {
+		struct timespec now;
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		/* TODO: timeout should be an argument! */
 		if ((int)now.tv_sec > timestamp + TIMEOUT) {
