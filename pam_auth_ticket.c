@@ -190,8 +190,11 @@ read_ticket(const char *user, int *timestamp, char **password)
 	bool success = false;
 	
 	if ((fd = open(AUTH_TICKET_PATH, O_RDONLY|O_SHLOCK)) < 0 ||
-		    (f = fdopen(fd, "r")) == NULL)
+	    (f = fdopen(fd, "r")) == NULL) {
+		if (fd >= 0)
+			close(fd);
 		return (false);
+	}
 
 	words = openpam_readlinev(f, NULL, &word_count);
 	while (words != NULL) {
