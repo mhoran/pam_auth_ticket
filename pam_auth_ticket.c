@@ -48,8 +48,8 @@
 #define TIMEOUT 600
 #define AUTH_TICKET_PATH "/tmp/auth_tickets"
 
-static int write_ticket(const char* data);
-static bool read_ticket(int *timestamp, char **password);
+void write_ticket(const char *user, const char* data);
+static bool read_ticket(const char *user, int *timestamp, char **password);
 static void cleanup(pam_handle_t *pamh, void *data, int error_status);
 static char* gen_salt();
 
@@ -76,7 +76,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		return (PAM_AUTH_ERR);
 
 	cached_password = NULL;
-	if (!read_ticket(&timestamp, &cached_password)) {
+	if (!read_ticket(user, &timestamp, &cached_password)) {
 		pam_err = PAM_AUTH_ERR;
 		if (crypt_set_format("sha512"))
 			crypt_password = crypt(password, gen_salt());
@@ -154,12 +154,12 @@ PAM_EXTERN int
 pam_sm_open_session(pam_handle_t *pamh, int flags,
 	int argc, const char *argv[])
 {
+	const char *user;
 	const void *data;
-	int get_data_return;
 
-	get_data_return = pam_get_data(pamh, "pam_auth_ticket", &data);
-	if (get_data_return == PAM_SUCCESS)
-		write_ticket((const char*)data);
+	if (pam_get_user(pamh, &user, NULL) == PAM_SUCCESS &&
+	    pam_get_data(pamh, "pam_auth_ticket", &data) == PAM_SUCCESS)
+		write_ticket(user, (const char*)data);
 
 	return (PAM_SUCCESS);
 }
@@ -182,61 +182,59 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags,
 }
 
 static bool
-read_ticket(int *timestamp, char **password)
+read_ticket(const char *user, int *timestamp, char **password)
 {
-	int fd;
+	int fd, word_count;
 	FILE *f;
-	char *ts;
+	char **words;
 	bool success = false;
 	
 	if ((fd = open(AUTH_TICKET_PATH, O_RDONLY|O_SHLOCK)) < 0 ||
 		    (f = fdopen(fd, "r")) == NULL)
 		return (false);
 
-	if ((*password = openpam_readword(f, NULL, NULL)) != NULL) {
-		if ((ts = openpam_readword(f, NULL, NULL)) != NULL) {
-			const char *err;
-			*timestamp = strtonum(ts, 0, INT_MAX - TIMEOUT, &err);
-			if (err == NULL)
-				success = true;
-
-			free(ts);
-		} else {
-			openpam_log(PAM_LOG_ERROR, "failed to read timestamp");
+	words = openpam_readlinev(f, NULL, &word_count);
+	while (words != NULL) {
+		if (word_count != 3 || strcmp(user, words[0]) != 0) {
+			for(int i = 0; i < word_count; i++) {
+				free(words[i]);
+			}
+			free(words);
+			words = openpam_readlinev(f, NULL, &word_count);
+			continue;
 		}
-	} else {
-		openpam_log(PAM_LOG_ERROR, "failed to read cached password");
+
+		*password = words[1];
+		const char *err;
+		*timestamp = strtonum(words[2], 0, INT_MAX - TIMEOUT, &err);
+		success = (err == NULL);
+
+		free(words[0]);
+		free(words[2]);
+		free(words);
+		words = NULL;
 	}
 	fclose(f);
 	return (success);
 }
 
-static int
-write_ticket(const char* data)
+void
+write_ticket(const char* user, const char* data)
 {
-	int fd, flags, len, pam_err;
+	int fd, flags;
+	FILE *f;
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
-	int now_digits = floor(log10(abs((int)now.tv_sec))) + 1;
-	char ts[now_digits + 1];
-	snprintf(ts, sizeof(ts), "%d", (int)now.tv_sec);
-
 	flags = O_WRONLY|O_CREAT|O_TRUNC|O_EXLOCK;
-	len = strlen(data);
-	if ((fd = open(AUTH_TICKET_PATH, flags, 0600)) < 0 ||
-	    write(fd, data, len) != len || write(fd, " ", 1) != 1 ||
-	    write(fd, ts, strlen(ts)) != strlen(ts) ||
-	    write(fd, "\n", 1) != 1) {
-		openpam_log(PAM_LOG_ERROR, "%s: %m", AUTH_TICKET_PATH);
-		pam_err = PAM_SYSTEM_ERR;
-	} else
-		pam_err = PAM_SUCCESS;
-
-	if (fd >= 0)
+	if ((fd = open(AUTH_TICKET_PATH, flags, 0600)) >= 0 &&
+	    (f = fdopen(fd, "w")) != NULL) {
+		fprintf(f, "%s %s %d\n", user, data, (int)now.tv_sec);
+		fclose(f);
+	} else if (fd >= 0)
 		close(fd);
-	return (pam_err);
+
 }
 
 #ifdef PAM_MODULE_ENTRY
