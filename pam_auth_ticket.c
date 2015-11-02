@@ -31,6 +31,7 @@
 // TODO: expire token on pass change
 
 #include <sys/param.h>
+#include <sys/stat.h>
 
 #include <pwd.h>
 #include <stdlib.h>
@@ -48,6 +49,7 @@
 #define TIMEOUT 600
 #define AUTH_TICKET_PATH "/tmp/auth_tickets"
 
+static int open_ticket(int flags);
 void write_ticket(const char *user, const char* data);
 static bool read_ticket(const char *user, int *timestamp, char **password);
 static void cleanup(pam_handle_t *pamh, void *data, int error_status);
@@ -189,7 +191,7 @@ read_ticket(const char *user, int *timestamp, char **password)
 	char **words;
 	bool success = false;
 	
-	if ((fd = open(AUTH_TICKET_PATH, O_RDONLY|O_SHLOCK)) < 0 ||
+	if ((fd = open_ticket(O_RDONLY|O_SHLOCK)) < 0 ||
 	    (f = fdopen(fd, "r")) == NULL) {
 		if (fd >= 0)
 			close(fd);
@@ -224,20 +226,68 @@ read_ticket(const char *user, int *timestamp, char **password)
 void
 write_ticket(const char* user, const char* data)
 {
-	int fd, flags;
-	FILE *f;
+	int fd, success, word_count;
+	FILE *f, *t;
+	char **words;
 
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
-	flags = O_WRONLY|O_CREAT|O_TRUNC|O_EXLOCK;
-	if ((fd = open(AUTH_TICKET_PATH, flags, 0600)) >= 0 &&
-	    (f = fdopen(fd, "w")) != NULL) {
-		fprintf(f, "%s %s %d\n", user, data, (int)now.tv_sec);
-		fclose(f);
-	} else if (fd >= 0)
-		close(fd);
+	if ((fd = open_ticket(O_RDWR|O_CREAT|O_EXLOCK)) < 0 ||
+	    (f = fdopen(fd, "r")) == NULL) {
+		if (fd >= 0)
+			close(fd);
+		return;
+	}
 
+	char temp_path[strlen(AUTH_TICKET_PATH) + 7 + 1];
+	// FIXME: check for success
+	sprintf(temp_path, "%s.XXXXXX", AUTH_TICKET_PATH);
+	if ((success = mkstemp(temp_path)) == -1 ||
+	    (t = fopen(temp_path, "w")) == NULL) {
+		if (success != -1)
+			unlink(temp_path);
+		goto done;
+	}
+
+	words = openpam_readlinev(f, NULL, &word_count);
+	while (words != NULL) {
+		if (word_count == 3 && strcmp(user, words[0]) != 0)
+			fprintf(t, "%s %s %s\n", words[0], words[1], words[2]);
+		for(int i = 0; i < word_count; i++)
+			free(words[i]);
+		free(words);
+		words = openpam_readlinev(f, NULL, &word_count);
+	}
+	// FIXME: check for success
+	fprintf(t, "%s %s %d\n", user, data, (int)now.tv_sec);
+
+	if (fclose(t) == 0) {
+		if (rename(temp_path, AUTH_TICKET_PATH) == 0) {
+			ftruncate(fd, 0);
+			goto done;
+		}
+	}
+	truncate(temp_path, 0);
+	unlink(temp_path);
+done:
+	fclose(f);
+}
+
+static int
+open_ticket(int flags) {
+	int fd;
+	struct stat sb;
+	for (int i = 0; i < 3; i++) {
+		if ((flags & O_CREAT) != 0)
+			fd = open(AUTH_TICKET_PATH, flags, 0600);
+		else
+			fd = open(AUTH_TICKET_PATH, flags);
+
+		if (fd < 0 || (fstat(fd, &sb) == 0 && sb.st_nlink > 0))
+			return (fd);
+	}
+	return (-1);
 }
 
 #ifdef PAM_MODULE_ENTRY
