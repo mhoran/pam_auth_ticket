@@ -226,7 +226,7 @@ read_ticket(const char *user, int *timestamp, char **password)
 void
 write_ticket(const char* user, const char* data)
 {
-	int fd, success, word_count;
+	int fd, ret, word_count;
 	FILE *f, *t;
 	char **words;
 
@@ -241,29 +241,32 @@ write_ticket(const char* user, const char* data)
 	}
 
 	char temp_path[strlen(AUTH_TICKET_PATH) + 7 + 1];
-	// FIXME: check for success
-	sprintf(temp_path, "%s.XXXXXX", AUTH_TICKET_PATH);
-	if ((success = mkstemp(temp_path)) == -1 ||
+	if (sprintf(temp_path, "%s.XXXXXX", AUTH_TICKET_PATH) < 0)
+		goto done;
+
+	if ((ret = mkstemp(temp_path)) == -1 ||
 	    (t = fopen(temp_path, "w")) == NULL) {
-		if (success != -1)
+		if (ret != -1)
 			unlink(temp_path);
 		goto done;
 	}
 
-	words = openpam_readlinev(f, NULL, &word_count);
-	while (words != NULL) {
+	ret = 0;
+	while ((words = openpam_readlinev(f, NULL, &word_count)) != NULL) {
 		if (word_count == 3 && strcmp(user, words[0]) != 0)
-			fprintf(t, "%s %s %s\n", words[0], words[1], words[2]);
+			ret = fprintf(t, "%s %s %s\n",
+			    words[0], words[1], words[2]);
 		for(int i = 0; i < word_count; i++)
 			free(words[i]);
 		free(words);
-		words = openpam_readlinev(f, NULL, &word_count);
+		if (ret < 0)
+			break;
 	}
-	// FIXME: check for success
-	fprintf(t, "%s %s %d\n", user, data, (int)now.tv_sec);
+	if (ret >= 0)
+		ret = fprintf(t, "%s %s %d\n", user, data, (int)now.tv_sec);
 
 	if (fclose(t) == 0) {
-		if (rename(temp_path, AUTH_TICKET_PATH) == 0) {
+		if (ret >= 0 && rename(temp_path, AUTH_TICKET_PATH) == 0) {
 			ftruncate(fd, 0);
 			goto done;
 		}
